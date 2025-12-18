@@ -11,16 +11,8 @@ fn main() {
     println!("cargo:rerun-if-changed=wrapper.h");
 
     // Tell cargo to tell rustc to link the heif library.
-
-    #[cfg(not(target_os = "windows"))]
     #[allow(unused_variables)]
     let include_paths = find_libheif();
-
-    #[cfg(target_os = "windows")]
-    #[allow(unused_variables)]
-    let include_paths: Vec<String> = Vec::new();
-    #[cfg(target_os = "windows")]
-    install_libheif_by_vcpkg();
 
     #[cfg(feature = "use-bindgen")]
     run_bindgen(&include_paths);
@@ -40,8 +32,54 @@ fn prepare_libheif_src() -> PathBuf {
     let mut contents =
         std::fs::read_to_string(&cmake_lists_path).expect("failed to read libheif/CMakeLists.txt");
     contents = contents.replace("add_subdirectory(heifio)", "");
+    contents = contents.replace("find_package(Doxygen)", ""); // Don't search for docs
     std::fs::write(&cmake_lists_path, contents).expect("failed to write libheif/CMakeLists.txt");
     dst_dir
+}
+
+#[cfg(feature = "embedded-libheif")]
+fn prepare_libde265_src() -> PathBuf {
+    let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let crate_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let libde265_dir = crate_dir.join("vendor/libde265");
+    let dst_dir = out_path.join("libde265");
+    copy_dir_all(libde265_dir, &dst_dir).unwrap();
+    dst_dir
+}
+
+#[cfg(feature = "embedded-libheif")]
+fn compile_libde265() -> (PathBuf, String) {
+    use std::path::PathBuf;
+
+    let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let libde265_dir = prepare_libde265_src();
+
+    let mut build_config = cmake::Config::new(libde265_dir);
+    build_config.out_dir(out_path.join("libde265_build"));
+    build_config.define("CMAKE_INSTALL_LIBDIR", "lib");
+
+    // Disable some options
+    for key in [
+        "BUILD_SHARED_LIBS",
+        "ENABLE_SDL",
+        "ENABLE_ENCODER",
+        "ENABLE_DECODER"
+    ] {
+        build_config.define(key, "OFF");
+    }
+    
+    // Do not build Framework on Apple
+    #[cfg(target_vendor = "apple")]
+    build_config.define("BUILD_FRAMEWORK", "OFF");
+
+    println!("cargo:warning=Here!");
+    
+    let libde265_build = build_config.build();
+
+    (libde265_build.clone(), libde265_build
+        .join("lib/pkgconfig")
+        .to_string_lossy()
+        .to_string())
 }
 
 #[cfg(feature = "embedded-libheif")]
@@ -54,6 +92,19 @@ fn compile_libheif() -> String {
     let mut build_config = cmake::Config::new(libheif_dir);
     build_config.out_dir(out_path.join("libheif_build"));
     build_config.define("CMAKE_INSTALL_LIBDIR", "lib");
+    
+    // Build module paths
+    let mut prefix_paths = String::new();
+    let paths = [out_path.join("libde265_build")];
+    for (idx, path) in paths.iter().enumerate()
+    {
+        prefix_paths.push_str(path.to_str().unwrap());
+        if idx != paths.len()
+        {
+            prefix_paths.push(';');
+        }
+    }
+    build_config.define("CMAKE_PREFIX_PATH", prefix_paths);
 
     // Disable some options
     for key in [
@@ -63,6 +114,8 @@ fn compile_libheif() -> String {
         "WITH_EXAMPLES",
         "ENABLE_EXPERIMENTAL_FEATURES",
         "ENABLE_PLUGIN_LOADING",
+        "WITH_EXAMPLE_HEIF_THUMB",
+        "WITH_EXAMPLE_HEIF_VIEW",
     ] {
         build_config.define(key, "OFF");
     }
@@ -128,7 +181,6 @@ fn compile_libheif() -> String {
         .to_string()
 }
 
-#[cfg(not(target_os = "windows"))]
 fn find_libheif() -> Vec<String> {
     #[allow(unused_mut)]
     let mut config = system_deps::Config::new();
@@ -136,7 +188,13 @@ fn find_libheif() -> Vec<String> {
     #[cfg(feature = "embedded-libheif")]
     {
         std::env::set_var("SYSTEM_DEPS_LIBHEIF_BUILD_INTERNAL", "always");
-        config = config.add_build_internal("libheif", |lib, version| {
+        std::env::set_var("SYSTEM_DEPS_LIBDE265_BUILD_INTERNAL", "always");
+        config = config.add_build_internal("libde265", move |lib, version| {
+            let (root, pc_file_path) = compile_libde265();
+            std::env::set_var("PKG_CONFIG_PATH", format!("{}:{}", pc_file_path, std::env::var("PKG_CONFIG_PATH").unwrap_or_default()));
+            system_deps::Library::from_internal_pkg_config(pc_file_path, lib, version)
+        });
+        config = config.add_build_internal("libheif", move |lib, version| {
             let pc_file_path = compile_libheif();
             system_deps::Library::from_internal_pkg_config(pc_file_path, lib, version)
         });
@@ -167,17 +225,6 @@ fn find_libheif() -> Vec<String> {
             println!("cargo:error={err_msg}");
             std::process::exit(1);
         }
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn install_libheif_by_vcpkg() {
-    let vcpkg_lib = vcpkg::Config::new()
-        .emit_includes(true)
-        .find_package("libheif");
-    if let Err(err) = vcpkg_lib {
-        println!("cargo:warning={}", err);
-        std::process::exit(1);
     }
 }
 

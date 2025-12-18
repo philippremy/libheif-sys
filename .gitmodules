@@ -1,3 +1,7 @@
 [submodule "vendor/libheif"]
 	path = vendor/libheif
 	url = https://github.com/strukturag/libheif.git
+[submodule "vendor/libde265"]
+	path = vendor/libde265
+	url = https://github.com/strukturag/libde265.git
+	branch = 7ba6588

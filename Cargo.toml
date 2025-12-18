@@ -29,6 +29,9 @@ v1_19 = { version = "1.19" }
 v1_20 = { version = "1.20" }
 
 
+[package.metadata.system-deps]
+libde265 = { version = "1.0.16" }
+
 [features]
 v1_17 = []
 v1_18 = []
